@@ -1,0 +1,27 @@
+# IDE
+.idea/
+.vscode/
+.claude/
+# Build
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+build.ninja
+.ninja_*
+
+# binaries / objects
+*.o
+*.a
+*.so
+*.out
+*.exe
+
+# python
+__pycache__/
+*.pyc
+
+# logs / results
+results/
+*.log
