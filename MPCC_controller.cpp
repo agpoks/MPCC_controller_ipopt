@@ -141,6 +141,16 @@ void MPC::set_initial_params(const std::map<std::string, double>& num,
     ipopt_tol_            = get("ipopt_tol",            1e-4);
     ipopt_acceptable_tol_ = get("ipopt_acceptable_tol", 1e-3);
 
+    // ── HSL linear solver (environment variable overrides) ──────────────
+    const char* env_solver = std::getenv("MPC_IPOPT_LINEAR_SOLVER");
+    if (env_solver) {
+        ipopt_linear_solver_ = std::string(env_solver);
+    }
+    const char* env_hsllib = std::getenv("MPC_IPOPT_HSL_LIB");
+    if (env_hsllib) {
+        ipopt_hsllib_ = std::string(env_hsllib);
+    }
+
     // Initial previous input: zero rates → start from rest
     u_prev_ = DM::zeros(NU);
 }
@@ -366,10 +376,16 @@ void MPC::setup_MPC()
     ipopt_opts["print_level"]               = 0;
     ipopt_opts["warm_start_init_point"]     = std::string("yes");
     ipopt_opts["mu_init"]                   = 1e-3;
+    ipopt_opts["linear_solver"]             = ipopt_linear_solver_;  // ma57, ma86, ma97, or mumps
+    if (!ipopt_hsllib_.empty()) {
+        ipopt_opts["hsllib"]                = ipopt_hsllib_;
+    }
 
     Dict solver_opts;
     solver_opts["ipopt"]      = ipopt_opts;
-    solver_opts["print_time"] = 0;
+    solver_opts["verbose"]    = false;
+    solver_opts["print_time"] = false;
+    solver_opts["expand"]     = true;  // CRITICAL for HSL initialization
 
     opti_.solver("ipopt", solver_opts);
     std::cout << "[MPCC] NLP built: N=" << N_ << " dt=" << dt_

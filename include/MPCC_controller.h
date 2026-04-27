@@ -115,6 +115,8 @@ private:
     int    ipopt_max_iter_       = 100;
     double ipopt_tol_            = 1e-4;
     double ipopt_acceptable_tol_ = 1e-3;
+    std::string ipopt_linear_solver_ = "ma57";  // HSL MA57 (faster than MUMPS)
+    std::string ipopt_hsllib_        = "";
 
     VehicleParams vp_;
     casadi::Function f_cont_;  // continuous dynamics x_dot=f(x,u) — Euler in NLP
