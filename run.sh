@@ -21,11 +21,21 @@ cd "${SCRIPT_DIR}"
 "${BUILD_DIR}/MPCC_controller_cpp"
 
 # ── Playback / visualisation ──────────────────────────────────────────────────
-GIF_ARGS=""
+RESULTS_DIR="${SCRIPT_DIR}/results"
+LATEST_RUN_DIR=""
+if [[ -d "${RESULTS_DIR}" ]]; then
+    LATEST_RUN_DIR="$(find "${RESULTS_DIR}" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | awk 'NR==1{print $2}')"
+fi
+
+PLAYBACK_ARGS=(--track-folder "${SCRIPT_DIR}/raceline")
+if [[ -n "${LATEST_RUN_DIR}" && -f "${LATEST_RUN_DIR}/states_ctrls.csv" ]]; then
+    PLAYBACK_ARGS+=(--results-dir "${LATEST_RUN_DIR}")
+fi
+
 if [[ "${1:-}" == "gif" ]]; then
     mkdir -p "${SCRIPT_DIR}/plots"
-    GIF_ARGS="--gif ${SCRIPT_DIR}/plots/playback.gif --no-show"
+    PLAYBACK_ARGS+=(--gif "${SCRIPT_DIR}/plots/playback.gif" --no-show)
 fi
 
 echo "[run.sh] Running playback script..."
-python3 "${SCRIPT_DIR}/scripts/playback_dashboard_csv.py" ${GIF_ARGS}
+python3 "${SCRIPT_DIR}/scripts/playback_dashboard_csv.py" "${PLAYBACK_ARGS[@]}"

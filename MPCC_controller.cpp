@@ -136,10 +136,13 @@ void MPC::set_initial_params(const std::map<std::string, double>& num,
     rdD_      = get("mpc_w_accel",   1e-4);
     rdDelta_  = get("mpc_w_delta_d", 5e-3);
     rdVs_     = get("mpc_w_delta_p", 1e-5);
+    qObs_     = get("mpc_w_obs", 2000.0);
 
     ipopt_max_iter_       = static_cast<int>(get("ipopt_max_iter", 100));
     ipopt_tol_            = get("ipopt_tol",            1e-4);
     ipopt_acceptable_tol_ = get("ipopt_acceptable_tol", 1e-3);
+    ipopt_acceptable_obj_change_tol_ = get("ipopt_acceptable_obj_change_tol", 1e-3);
+    ipopt_max_cpu_time_   = get("ipopt_max_cpu_time", 0.0);
 
     // ── HSL linear solver (environment variable overrides) ──────────────
     const char* env_solver = std::getenv("MPC_IPOPT_LINEAR_SOLVER");
@@ -215,7 +218,6 @@ void MPC::add_corridor_constraint(const MX& Xk, const MX& Yk, const MX& s_c)
 MX MPC::obstacle_penalty(const MX& Xk, const MX& Yk) const
 {
     const double min_sep = car_radius_ + obs_margin_;
-    const double q_obs   = 2000.0;  // penalty weight
     MX pen = MX::zeros(1);
     for (int i = 0; i < max_obs_; i++) {
         MX ox  = p_obs_(i, 0), oy  = p_obs_(i, 1), or_ = p_obs_(i, 2);
@@ -224,7 +226,7 @@ MX MPC::obstacle_penalty(const MX& Xk, const MX& Yk) const
         // Penalty = max(0, r_req^2 - dist^2)^2 / r_req^2  (normalised)
         MX excess   = r_req_sq - dist_sq;          // > 0 when too close
         MX pos_exc  = (excess + fabs(excess)) / 2; // soft ReLU  (non-negative part)
-        pen += q_obs * pow(pos_exc, 2) / (r_req_sq + 1e-6);
+        pen += qObs_ * pow(pos_exc, 2) / (r_req_sq + 1e-6);
     }
     return pen;
 }
@@ -298,8 +300,7 @@ void MPC::setup_MPC()
                    -  qVs_   * vsk
                    +  rdD_   * pow(du(0), 2)
                    +  rdDelta_* pow(du(1), 2)
-                   +  rdVs_  * pow(du(2), 2)
-                   +  obstacle_penalty(Xk, Yk);  // soft obstacle avoidance
+               +  rdVs_  * pow(du(2), 2);
 
         // ── Dynamics: Euler step (quarter the expression graph of RK4) ──
         // propagate() uses RK4 for accuracy; NLP uses Euler for speed.
@@ -369,16 +370,25 @@ void MPC::setup_MPC()
 
     // ── IPOPT options ─────────────────────────────────────────────────────
     Dict ipopt_opts;
-    ipopt_opts["max_iter"]                  = std::max(ipopt_max_iter_, 500);
+    ipopt_opts["max_iter"]                  = ipopt_max_iter_;
     ipopt_opts["tol"]                       = ipopt_tol_;
     ipopt_opts["acceptable_tol"]            = ipopt_acceptable_tol_;
-    ipopt_opts["acceptable_obj_change_tol"] = 1e-3;
+    ipopt_opts["acceptable_obj_change_tol"] = ipopt_acceptable_obj_change_tol_;
     ipopt_opts["print_level"]               = 0;
     ipopt_opts["warm_start_init_point"]     = std::string("yes");
+    ipopt_opts["warm_start_bound_push"]     = 1e-6;
+    ipopt_opts["warm_start_mult_bound_push"] = 1e-6;
+    ipopt_opts["warm_start_slack_bound_push"] = 1e-6;
     ipopt_opts["mu_init"]                   = 1e-3;
+    ipopt_opts["mu_strategy"]               = std::string("adaptive");
+    ipopt_opts["nlp_scaling_method"]        = std::string("gradient-based");
+    ipopt_opts["fixed_variable_treatment"]  = std::string("relax_bounds");
     ipopt_opts["linear_solver"]             = ipopt_linear_solver_;  // ma57, ma86, ma97, or mumps
     if (!ipopt_hsllib_.empty()) {
         ipopt_opts["hsllib"]                = ipopt_hsllib_;
+    }
+    if (ipopt_max_cpu_time_ > 0.0) {
+        ipopt_opts["max_cpu_time"]          = ipopt_max_cpu_time_;
     }
 
     Dict solver_opts;
@@ -524,12 +534,18 @@ MPC::Solution MPC::solve(const std::vector<double>& x0)
                           Usol(Slice(), Slice(N_-1, N_)));
         has_warm_start_ = true;
     } else if (has_warm_start_) {
-        // Use shifted warm start; apply zero rates (hold actuator states)
+        // Use shifted warm start and apply first warm-start control.
+        // This is safer than zero rates when a real-time solve times out.
         sol.X_opt = X_warm_.T();
         sol.U_opt = U_warm_.T();
         last_cost = 0.0;
-        // zero rates = hold D, delta, vs unchanged (safe)
-        sol.u_cmd_first = {0.0, 0.0, 0.0};
+        if (U_warm_.size2() > 0) {
+            sol.u_cmd_first[0] = static_cast<double>(U_warm_(0, 0));
+            sol.u_cmd_first[1] = static_cast<double>(U_warm_(1, 0));
+            sol.u_cmd_first[2] = static_cast<double>(U_warm_(2, 0));
+        } else {
+            sol.u_cmd_first = {0.0, 0.0, 0.0};
+        }
         // Don't update warm start (keep previous feasible trajectory)
     } else {
         // No history at all: cold start output — zero rates

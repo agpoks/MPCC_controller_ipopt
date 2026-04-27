@@ -239,10 +239,13 @@ def load_u_pred_csv(path, num_steps):
     return [np.array(up_map.get(step, []), dtype=float) for step in range(num_steps)]
 
 
-def extend_vhist_for_dashboard(ctrls):
-    if ctrls.shape[0] == 0:
+def extend_vhist_for_dashboard(states):
+    # In this project, ctrls[:,0] is drivetrain command D (not speed).
+    # Use logged v_state from states[:,4] for dashboard velocity traces.
+    if states.shape[0] == 0:
         return np.zeros((0,), dtype=float)
-    return np.r_[ctrls[0, 0], ctrls[:, 0]]
+    v_state = states[:, 4]
+    return np.r_[v_state[0], v_state]
 
 
 def extend_vref_for_dashboard(v_ref):
@@ -340,7 +343,7 @@ def main():
     u_pred_hist = load_u_pred_csv(upred_csv, num_steps)
 
     states_plot = extend_states_for_dashboard(states)
-    v_hist = extend_vhist_for_dashboard(ctrls)
+    v_hist = extend_vhist_for_dashboard(states)
     v_ref_series = extend_vref_for_dashboard(v_ref)
 
     states_plot = apply_stride(states_plot, stride)

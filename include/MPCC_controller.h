@@ -110,11 +110,14 @@ private:
     double rdD_     = 1e-4;
     double rdDelta_ = 5e-3;
     double rdVs_    = 1e-5;
+    double qObs_    = 2000.0;
     double qCN_mult_ = 10.0;
 
     int    ipopt_max_iter_       = 100;
     double ipopt_tol_            = 1e-4;
     double ipopt_acceptable_tol_ = 1e-3;
+    double ipopt_acceptable_obj_change_tol_ = 1e-3;
+    double ipopt_max_cpu_time_   = 0.0;
     std::string ipopt_linear_solver_ = "ma57";  // HSL MA57 (faster than MUMPS)
     std::string ipopt_hsllib_        = "";
 

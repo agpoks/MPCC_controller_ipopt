@@ -55,12 +55,16 @@ int main()
 
     // Obstacle settings
     param_num["max_obstacles"] = 4;
-    param_num["obs_margin"]    = 0.25;
+    param_num["obs_margin"]    = 0.27;
+    param_num["mpc_w_obs"]     = 3000.0;
 
     // IPOPT
-    param_num["ipopt_max_iter"]       = 100;
+    param_num["ipopt_max_iter"]       = 120;
     param_num["ipopt_tol"]            = 1e-4;
     param_num["ipopt_acceptable_tol"] = 1e-3;
+    param_num["ipopt_acceptable_obj_change_tol"] = 1e-3;
+    // Keep disabled by default; enable only if you need hard solve-time clipping.
+    param_num["ipopt_max_cpu_time"]   = 0.0;
 
     // ── Track loading ──────────────────────────────────────────────────────
     fs::path project_dir  = fs::path(__FILE__).parent_path();
