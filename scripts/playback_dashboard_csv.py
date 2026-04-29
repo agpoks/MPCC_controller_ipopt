@@ -2,8 +2,10 @@
 import os
 import csv
 import argparse
+import math
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 from casadi import interpolant
 
 import viz
@@ -156,6 +158,27 @@ def load_main_csv(path):
     cost_hist = []
     solve_time = []
     v_ref = np.zeros(K, dtype=float)
+    logged_limits = {
+        "theta_min": None,
+        "theta_max": None,
+        "vx_min": None,
+        "vx_max": None,
+        "D_min": None,
+        "D_max": None,
+        "vs_min": None,
+        "vs_max": None,
+    }
+
+    def maybe_float(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s == "":
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
 
     for i, r in enumerate(rows):
         states[i] = [
@@ -174,8 +197,12 @@ def load_main_csv(path):
         solve_time.append(float(r["solve_time"]) if r["solve_time"] != "" else np.nan)
         v_ref[i] = float(r["v_ref"]) if r["v_ref"] != "" else np.nan
 
+        if i == 0:
+            for k in logged_limits.keys():
+                logged_limits[k] = maybe_float(r.get(k, None))
+
     dt = float(rows[1]["t"]) - float(rows[0]["t"]) if K > 1 else 0.25
-    return states, ctrls, cost_hist, solve_time, v_ref, dt
+    return states, ctrls, cost_hist, solve_time, v_ref, dt, logged_limits
 
 
 def load_predictions_csv(path, num_steps):
@@ -234,7 +261,11 @@ def load_u_pred_csv(path, num_steps):
         reader = csv.DictReader(f)
         for r in reader:
             step = int(r["step"])
-            up_map.setdefault(step, []).append(float(r["p_cmd"]))
+            if "v_pred" in r and r["v_pred"] != "":
+                up_map.setdefault(step, []).append(float(r["v_pred"]))
+            elif "p_cmd" in r and r["p_cmd"] != "":
+                # Backward compatibility with older logs where this was mislabeled.
+                up_map.setdefault(step, []).append(float(r["p_cmd"]))
 
     return [np.array(up_map.get(step, []), dtype=float) for step in range(num_steps)]
 
@@ -290,6 +321,22 @@ def parse_args():
                         help="FPS for GIF export.")
     parser.add_argument("--dpi", type=int, default=100,
                         help="DPI for GIF export.")
+    parser.add_argument("--gif-max-frames", type=int, default=220,
+                        help="Maximum frames for GIF export (auto-increases stride if needed).")
+    parser.add_argument("--theta-max", type=float, default=None,
+                        help="Override logged steering angle limit [rad] for constraint visualization.")
+    parser.add_argument("--d-min", type=float, default=None,
+                        help="Override logged drivetrain state lower limit D_min.")
+    parser.add_argument("--d-max", type=float, default=None,
+                        help="Override logged drivetrain state upper limit D_max.")
+    parser.add_argument("--vs-min", type=float, default=None,
+                        help="Override logged progress-speed state lower limit vs_min.")
+    parser.add_argument("--vs-max", type=float, default=None,
+                        help="Override logged progress-speed state upper limit vs_max.")
+    parser.add_argument("--vx-min", type=float, default=None,
+                        help="Override logged longitudinal speed lower limit.")
+    parser.add_argument("--vx-max", type=float, default=None,
+                        help="Override logged longitudinal speed upper limit.")
     parser.add_argument("--no-show", action="store_true",
                         help="Do not open the matplotlib window.")
     return parser.parse_args()
@@ -300,12 +347,33 @@ def save_animation_gif(anim, gif_path, fps, dpi):
     os.makedirs(os.path.dirname(gif_path), exist_ok=True)
     print(f"Saving GIF to: {gif_path}")
     try:
-        anim.save(gif_path, writer="pillow", fps=fps, dpi=dpi)
+        writer = animation.PillowWriter(fps=fps)
+        anim.save(gif_path, writer=writer, dpi=dpi)
     except Exception as e:
         raise RuntimeError(
             "GIF export failed. Make sure pillow is installed, e.g. 'pip install pillow'."
         ) from e
     print("GIF export finished.")
+
+
+def align_1d_length(series, target_len):
+    arr = np.asarray(series, dtype=float).reshape(-1)
+    if target_len <= 0:
+        return np.zeros((0,), dtype=float)
+    if arr.size == 0:
+        return np.full((target_len,), np.nan, dtype=float)
+    if arr.size > target_len:
+        return arr[:target_len]
+    return np.r_[arr, np.full(target_len - arr.size, arr[-1])]
+
+
+def align_list_length(items, target_len, default_factory):
+    out = list(items)
+    if len(out) > target_len:
+        return out[:target_len]
+    if len(out) < target_len:
+        out.extend(default_factory() for _ in range(target_len - len(out)))
+    return out
 
 
 def main():
@@ -335,7 +403,7 @@ def main():
     td, mpc_like = build_track_only(track_folder)
 
     print("Loading CSV data...")
-    states, ctrls, cost_hist, solve_time, v_ref, dt = load_main_csv(main_csv)
+    states, ctrls, cost_hist, solve_time, v_ref, dt, logged_limits = load_main_csv(main_csv)
     num_steps = ctrls.shape[0]
 
     pred_hist = load_predictions_csv(pred_csv, num_steps)
@@ -359,19 +427,58 @@ def main():
 
     T = states_plot.shape[0]
 
-    if v_hist.shape[0] > T:
-        v_hist = v_hist[:T]
-    elif 0 < v_hist.shape[0] < T:
-        v_hist = np.r_[v_hist, np.full(T - v_hist.shape[0], v_hist[-1])]
+    # For GIF export, auto-decimate long runs to keep export time and file size reasonable.
+    if args.gif and T > max(1, args.gif_max_frames):
+        auto_stride = int(math.ceil(float(T) / float(args.gif_max_frames)))
+        print(f"Auto GIF stride: {auto_stride} (from {T} frames to <= {args.gif_max_frames})")
+        states_plot = apply_stride(states_plot, auto_stride)
+        pred_hist = apply_stride_list(pred_hist, auto_stride)
+        obs_log = apply_stride_list(obs_log, auto_stride)
+        ctrls = apply_stride(ctrls, auto_stride)
+        cost_hist = apply_stride_list(cost_hist, auto_stride)
+        solve_time = apply_stride_list(solve_time, auto_stride)
+        u_pred_hist = apply_stride_list(u_pred_hist, auto_stride)
+        v_hist = apply_stride(v_hist, auto_stride)
+        v_ref_series = apply_stride(v_ref_series, auto_stride)
+        dt = dt * auto_stride
+        T = states_plot.shape[0]
 
-    if v_ref_series.shape[0] > T:
-        v_ref_series = v_ref_series[:T]
-    elif 0 < v_ref_series.shape[0] < T:
-        v_ref_series = np.r_[v_ref_series, np.full(T - v_ref_series.shape[0], v_ref_series[-1])]
+    v_hist = align_1d_length(v_hist, T)
+    v_ref_series = align_1d_length(v_ref_series, T)
+    cost_hist = align_1d_length(cost_hist, T)
+    solve_time = align_1d_length(solve_time, T)
+    pred_hist = align_list_length(pred_hist, T, lambda: np.zeros((0, 4), dtype=float))
+    obs_log = align_list_length(obs_log, T, lambda: [])
+    u_pred_hist = align_list_length(u_pred_hist, T, lambda: np.zeros((0,), dtype=float))
 
     print(f"Playback stride = {stride}")
     print(f"Frames after decimation = {T}")
     print("Note: playback uses base corridor LUTs only, matching current C++ solve() flow.")
+
+    limits = {
+        "theta_max": logged_limits.get("theta_max"),
+        "D_min": logged_limits.get("D_min"),
+        "D_max": logged_limits.get("D_max"),
+        "vs_min": logged_limits.get("vs_min"),
+        "vs_max": logged_limits.get("vs_max"),
+        "vx_min": logged_limits.get("vx_min"),
+        "vx_max": logged_limits.get("vx_max"),
+    }
+
+    if args.theta_max is not None:
+        limits["theta_max"] = float(args.theta_max)
+    if args.d_min is not None:
+        limits["D_min"] = float(args.d_min)
+    if args.d_max is not None:
+        limits["D_max"] = float(args.d_max)
+    if args.vs_min is not None:
+        limits["vs_min"] = float(args.vs_min)
+    if args.vs_max is not None:
+        limits["vs_max"] = float(args.vs_max)
+    if args.vx_min is not None:
+        limits["vx_min"] = float(args.vx_min)
+    if args.vx_max is not None:
+        limits["vx_max"] = float(args.vx_max)
 
     if simple_mode:
         anim, fig = viz.animate_mpc_dashboard(
@@ -400,6 +507,7 @@ def main():
             lap_s0=0.0,
             show_start_line=True,
             u_pred_hist=u_pred_hist,
+            limits=limits,
         )
 
     if args.gif:

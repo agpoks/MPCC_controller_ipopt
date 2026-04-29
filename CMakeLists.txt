@@ -16,6 +16,20 @@ set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} -Wall -Wextra -pthread")
 set(CMAKE_CXX_FLAGS_DEBUG   "-g")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
+# ── Optional HSL runtime path for direct MA57 execution ─────────────────────
+# Priority:
+#   1) env MPC_HSL_LIB_DIR
+#   2) env HSL_LIB_DIR
+#   3) $HOME/ThirdParty-HSL/.libs (common local setup)
+set(HSL_RUNTIME_DIR "")
+if(DEFINED ENV{MPC_HSL_LIB_DIR} AND NOT "$ENV{MPC_HSL_LIB_DIR}" STREQUAL "")
+    set(HSL_RUNTIME_DIR "$ENV{MPC_HSL_LIB_DIR}")
+elseif(DEFINED ENV{HSL_LIB_DIR} AND NOT "$ENV{HSL_LIB_DIR}" STREQUAL "")
+    set(HSL_RUNTIME_DIR "$ENV{HSL_LIB_DIR}")
+elseif(DEFINED ENV{HOME} AND EXISTS "$ENV{HOME}/ThirdParty-HSL/.libs")
+    set(HSL_RUNTIME_DIR "$ENV{HOME}/ThirdParty-HSL/.libs")
+endif()
+
 # ── CasADi ────────────────────────────────────────────────────────────────────
 set(CASADI_INCLUDE_DIR /usr/local/include/casadi)
 find_library(CASADI_LIBRARY
@@ -79,3 +93,10 @@ target_link_libraries(MPCC_controller_cpp PRIVATE
     Python::Python
     Python::NumPy
 )
+
+if(HSL_RUNTIME_DIR AND EXISTS "${HSL_RUNTIME_DIR}")
+    message(STATUS "HSL runtime directory detected: ${HSL_RUNTIME_DIR}")
+    target_link_directories(MPCC_controller_cpp PRIVATE "${HSL_RUNTIME_DIR}")
+    set_property(TARGET MPCC_controller_cpp APPEND PROPERTY BUILD_RPATH "${HSL_RUNTIME_DIR}")
+    set_property(TARGET MPCC_controller_cpp APPEND PROPERTY INSTALL_RPATH "${HSL_RUNTIME_DIR}")
+endif()

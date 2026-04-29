@@ -4,6 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 
+# Make local HSL shared libraries visible for IPOPT deferred loading.
+HSL_LIB_DIR="${HOME}/ThirdParty-HSL/.libs"
+if [[ -d "${HSL_LIB_DIR}" ]]; then
+    export LD_LIBRARY_PATH="${HSL_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+    echo "[run.sh] Using HSL libs from ${HSL_LIB_DIR}"
+fi
+
 # ── Clean build ───────────────────────────────────────────────────────────────
 echo "[run.sh] Cleaning build directory..."
 rm -rf "${BUILD_DIR}"
@@ -17,6 +24,7 @@ cmake --build "${BUILD_DIR}" -- -j"$(nproc)"
 
 # ── Run controller ────────────────────────────────────────────────────────────
 echo "[run.sh] Running MPCC controller..."
+echo "[run.sh] IPOPT linear solver default is internal (ma57), unless overridden by environment."
 cd "${SCRIPT_DIR}"
 "${BUILD_DIR}/MPCC_controller_cpp"
 

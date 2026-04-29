@@ -107,10 +107,13 @@ private:
     double qC_      = 0.1;
     double qL_      = 500.0;
     double qVs_     = 0.02;
+    double qVref_   = 0.0;
     double rdD_     = 1e-4;
     double rdDelta_ = 5e-3;
     double rdVs_    = 1e-5;
     double qObs_    = 2000.0;
+    double qObsHardSlack_ = 20000.0;
+    bool   use_hard_obs_slack_ = true;
     double qCN_mult_ = 10.0;
 
     int    ipopt_max_iter_       = 100;
@@ -137,6 +140,7 @@ private:
     // Evaluated numerically before each solve at warm-start arc-lengths.
     // Avoids 8*(N+1) symbolic B-spline nodes in the NLP graph.
     casadi::MX   p_track_;
+    casadi::MX   p_vref_;
     casadi::MX   cost_expr_;
 
     casadi::DM X_warm_, U_warm_;
@@ -151,4 +155,5 @@ private:
                                  const casadi::MX& s_c);
     void add_obstacle_constraints(const casadi::MX& X, const casadi::MX& Y);
     casadi::MX obstacle_penalty(const casadi::MX& X, const casadi::MX& Y) const;
+    void configure_solver();
 };

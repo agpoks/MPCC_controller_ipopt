@@ -19,6 +19,17 @@ struct SaveRunResult {
     std::string u_pred_csv;
 };
 
+struct LoggedLimits {
+    double theta_min = -0.35;
+    double theta_max = 0.35;
+    double vx_min = 0.0;
+    double vx_max = 3.5;
+    double D_min = -0.1;
+    double D_max = 1.0;
+    double vs_min = 0.0;
+    double vs_max = 3.5;
+};
+
 // Obstacle that moves along the track centerline at constant speed
 class MovingObstacle {
 public:
@@ -56,5 +67,6 @@ SaveRunResult save_run_csv_auto(
     const std::vector<double>& solve_time,
     const std::vector<double>& v_ref_series,
     const std::vector<std::vector<double>>& u_pred_hist,
+    const LoggedLimits& limits,
     bool timestamp = true
 );

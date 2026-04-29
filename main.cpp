@@ -49,6 +49,7 @@ int main()
     param_num["mpc_w_cte"]     = 0.1;
     param_num["mpc_w_lag"]     = 500.0;
     param_num["mpc_w_p"]       = 0.02;
+    param_num["mpc_w_vref"]    = 2.0;
     param_num["mpc_w_delta_d"] = 5e-3;
     param_num["mpc_w_delta_p"] = 1e-5;
     param_num["mpc_w_accel"]   = 1e-4;
@@ -57,6 +58,8 @@ int main()
     param_num["max_obstacles"] = 4;
     param_num["obs_margin"]    = 0.27;
     param_num["mpc_w_obs"]     = 3000.0;
+    param_num["mpc_use_hard_obs_slack"] = 1.0;
+    param_num["mpc_w_obs_hard_slack"]   = 20000.0;
 
     // IPOPT
     param_num["ipopt_max_iter"]       = 120;
@@ -179,10 +182,10 @@ int main()
         const double dDelta_opt = sol.u_cmd_first[1];
         const double dVs_opt    = sol.u_cmd_first[2];
 
-        // Collect predicted vs for CSV
+        // Collect predicted horizon speed state (vs) for CSV diagnostics
         std::vector<double> p_pred;
-        for (int i = 0; i < sol.U_opt.size1(); ++i)
-            p_pred.push_back(static_cast<double>(sol.U_opt(i, 2)));
+        for (int i = 0; i < sol.X_opt.size1(); ++i)
+            p_pred.push_back(static_cast<double>(sol.X_opt(i, 9)));
         u_pred_hist.push_back(p_pred);
 
         // Propagate one step with the dynamic model
@@ -238,6 +241,16 @@ int main()
     std::cout << "--- max:  " << t_max  << " s\n";
     std::cout << "--- END ---\n";
 
+    LoggedLimits logged_limits;
+    logged_limits.theta_min = -param_num["theta_max"];
+    logged_limits.theta_max =  param_num["theta_max"];
+    logged_limits.vx_min    = 0.0;
+    logged_limits.vx_max    = param_num["v_max"];
+    logged_limits.D_min     = -0.1;
+    logged_limits.D_max     = 1.0;
+    logged_limits.vs_min    = param_num["p_min"];
+    logged_limits.vs_max    = param_num["p_max"];
+
     // ── CSV save ──────────────────────────────────────────────────────────
     auto save_info = save_run_csv_auto(
         "results", "mpcc_single_track",
@@ -247,6 +260,7 @@ int main()
         states, ctrls,
         pred_hist, obs_log,
         cost_hist, solve_time, v_ref_hist, u_pred_hist,
+        logged_limits,
         true);
 
     std::cout << "Saved run to: " << save_info.run_dir << "\n"

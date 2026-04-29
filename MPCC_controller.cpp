@@ -4,6 +4,8 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <filesystem>
+#include <cstring>
 
 using namespace casadi;
 
@@ -133,10 +135,13 @@ void MPC::set_initial_params(const std::map<std::string, double>& num,
     qC_       = get("mpc_w_cte",     0.1);
     qL_       = get("mpc_w_lag",   500.0);
     qVs_      = get("mpc_w_p",      0.02);
+    qVref_    = get("mpc_w_vref",    2.0);
     rdD_      = get("mpc_w_accel",   1e-4);
     rdDelta_  = get("mpc_w_delta_d", 5e-3);
     rdVs_     = get("mpc_w_delta_p", 1e-5);
     qObs_     = get("mpc_w_obs", 2000.0);
+    qObsHardSlack_ = get("mpc_w_obs_hard_slack", 20000.0);
+    use_hard_obs_slack_ = (get("mpc_use_hard_obs_slack", 1.0) > 0.5);
 
     ipopt_max_iter_       = static_cast<int>(get("ipopt_max_iter", 100));
     ipopt_tol_            = get("ipopt_tol",            1e-4);
@@ -146,12 +151,52 @@ void MPC::set_initial_params(const std::map<std::string, double>& num,
 
     // ── HSL linear solver (environment variable overrides) ──────────────
     const char* env_solver = std::getenv("MPC_IPOPT_LINEAR_SOLVER");
-    if (env_solver) {
+    if (env_solver && std::string(env_solver).size() > 0) {
         ipopt_linear_solver_ = std::string(env_solver);
     }
     const char* env_hsllib = std::getenv("MPC_IPOPT_HSL_LIB");
-    if (env_hsllib) {
+    if (env_hsllib && std::string(env_hsllib).size() > 0) {
         ipopt_hsllib_ = std::string(env_hsllib);
+    } else {
+        const char* env_hsllib_alt1 = std::getenv("IPOPT_HSL_LIB");
+        const char* env_hsllib_alt2 = std::getenv("HSL_LIB");
+        if (env_hsllib_alt1 && std::string(env_hsllib_alt1).size() > 0) {
+            ipopt_hsllib_ = std::string(env_hsllib_alt1);
+        } else if (env_hsllib_alt2 && std::string(env_hsllib_alt2).size() > 0) {
+            ipopt_hsllib_ = std::string(env_hsllib_alt2);
+        }
+    }
+
+    // If no env var is set, try common local ThirdParty-HSL locations.
+    if (ipopt_hsllib_.empty()) {
+        namespace fs = std::filesystem;
+        const char* home = std::getenv("HOME");
+        if (home && std::string(home).size() > 0) {
+            const fs::path cand1 = fs::path(home) / "ThirdParty-HSL/.libs/libcoinhsl.so";
+            const fs::path cand2 = fs::path(home) / "ThirdParty-HSL/.libs/libhsl.so";
+            if (fs::exists(cand1)) {
+                ipopt_hsllib_ = cand1.string();
+            } else if (fs::exists(cand2)) {
+                ipopt_hsllib_ = cand2.string();
+            }
+        }
+    }
+
+    // Some CasADi/IPOPT builds do not expose the 'hsllib' IPOPT option.
+    // Make HSL visible by extending LD_LIBRARY_PATH with the library folder.
+    if (!ipopt_hsllib_.empty()) {
+        namespace fs = std::filesystem;
+        fs::path libp(ipopt_hsllib_);
+        if (fs::exists(libp)) {
+            const std::string libdir = libp.parent_path().string();
+            const char* ld = std::getenv("LD_LIBRARY_PATH");
+            std::string cur = ld ? std::string(ld) : std::string();
+            if (cur.find(libdir) == std::string::npos) {
+                std::string upd = libdir;
+                if (!cur.empty()) upd += ":" + cur;
+                setenv("LD_LIBRARY_PATH", upd.c_str(), 1);
+            }
+        }
     }
 
     // Initial previous input: zero rates → start from rest
@@ -237,6 +282,36 @@ void MPC::add_obstacle_constraints(const MX& Xk, const MX& Yk)
     (void)Xk; (void)Yk;
 }
 
+void MPC::configure_solver()
+{
+    Dict ipopt_opts;
+    ipopt_opts["max_iter"]                  = ipopt_max_iter_;
+    ipopt_opts["tol"]                       = ipopt_tol_;
+    ipopt_opts["acceptable_tol"]            = ipopt_acceptable_tol_;
+    ipopt_opts["acceptable_obj_change_tol"] = ipopt_acceptable_obj_change_tol_;
+    ipopt_opts["print_level"]               = 0;
+    ipopt_opts["warm_start_init_point"]     = std::string("yes");
+    ipopt_opts["warm_start_bound_push"]     = 1e-6;
+    ipopt_opts["warm_start_mult_bound_push"] = 1e-6;
+    ipopt_opts["warm_start_slack_bound_push"] = 1e-6;
+    ipopt_opts["mu_init"]                   = 1e-3;
+    ipopt_opts["mu_strategy"]               = std::string("adaptive");
+    ipopt_opts["nlp_scaling_method"]        = std::string("gradient-based");
+    ipopt_opts["fixed_variable_treatment"]  = std::string("relax_bounds");
+    ipopt_opts["linear_solver"]             = ipopt_linear_solver_;
+    if (ipopt_max_cpu_time_ > 0.0) {
+        ipopt_opts["max_cpu_time"]          = ipopt_max_cpu_time_;
+    }
+
+    Dict solver_opts;
+    solver_opts["ipopt"]      = ipopt_opts;
+    solver_opts["verbose"]    = false;
+    solver_opts["print_time"] = false;
+    solver_opts["expand"]     = true;
+
+    opti_.solver("ipopt", solver_opts);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Build NLP (called once before the simulation loop)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -253,16 +328,26 @@ void MPC::setup_MPC()
     // Soft corridor slack per future state (k+1 .. N): always keeps NLP feasible.
     // The vehicle pays a large quadratic cost for violating the corridor.
     MX S_cor  = opti_.variable(1, N_);  // one slack per step, >= 0
+    // Optional hard obstacle-distance constraints with non-negative slack.
+    // This keeps feasibility while strongly discouraging entering obstacle discs.
+    MX S_obs;
+    if (use_hard_obs_slack_) {
+        S_obs = opti_.variable(max_obs_, N_);
+    }
 
     p_x0_     = opti_.parameter(NX);
     p_obs_    = opti_.parameter(max_obs_, 3);
     p_u_prev_ = opti_.parameter(NU);
+    p_vref_   = opti_.parameter(N_ + 1);
     // Track geometry at each horizon step (rows = steps 0..N, cols = 8 values).
     // Evaluated numerically before each solve — avoids symbolic LUT nodes in NLP.
     // Columns: [cx, cy, tx, ty, lx, ly, rx, ry]
     p_track_  = opti_.parameter(N_ + 1, 8);
 
     opti_.subject_to(S_cor >= 0.0);    // slack must be non-negative
+    if (use_hard_obs_slack_) {
+        opti_.subject_to(opti_.bounded(0.0, S_obs, std::numeric_limits<double>::infinity()));
+    }
 
     // Initial state constraint
     opti_.subject_to(X_(Slice(), 0) == p_x0_);
@@ -275,6 +360,7 @@ void MPC::setup_MPC()
         MX xkp1 = X_(Slice(), k+1);
 
         MX Xk = xk(0), Yk = xk(1), vsk = xk(9);
+        MX vrefk = p_vref_(k);
 
         // ── Track geometry from numeric parameter (avoids symbolic LUT graph) ─
         MX cx = p_track_(k, 0), cy = p_track_(k, 1);
@@ -298,6 +384,7 @@ void MPC::setup_MPC()
         total_cost += qC_    * pow(e_c, 2)
                    +  qL_    * pow(e_l, 2)
                    -  qVs_   * vsk
+                   +  qVref_ * pow(vsk - vrefk, 2)
                    +  rdD_   * pow(du(0), 2)
                    +  rdDelta_* pow(du(1), 2)
                +  rdVs_  * pow(du(2), 2);
@@ -332,6 +419,22 @@ void MPC::setup_MPC()
 
         // Soft obstacle penalty on next state
         total_cost += obstacle_penalty(X1, Y1);
+
+        // Optional near-hard obstacle avoidance on next state:
+        // dist^2 + slack >= (r_obs + car_radius + margin)^2
+        if (use_hard_obs_slack_) {
+            const double min_sep = car_radius_ + obs_margin_;
+            for (int i = 0; i < max_obs_; ++i) {
+                MX ox = p_obs_(i, 0), oy = p_obs_(i, 1), or_ = p_obs_(i, 2);
+                MX req_sq = pow(or_ + min_sep, 2);
+                MX dist_sq = pow(X1 - ox, 2) + pow(Y1 - oy, 2);
+                MX sk_obs = S_obs(i, k);
+                opti_.subject_to(opti_.bounded(0.0,
+                                               dist_sq + sk_obs - req_sq,
+                                               std::numeric_limits<double>::infinity()));
+                total_cost += qObsHardSlack_ * pow(sk_obs, 2);
+            }
+        }
 
         // Soft corridor on next state: add slack S_cor(k) to the cost
         {
@@ -368,39 +471,13 @@ void MPC::setup_MPC()
     opti_.minimize(total_cost);
     cost_expr_ = total_cost;
 
-    // ── IPOPT options ─────────────────────────────────────────────────────
-    Dict ipopt_opts;
-    ipopt_opts["max_iter"]                  = ipopt_max_iter_;
-    ipopt_opts["tol"]                       = ipopt_tol_;
-    ipopt_opts["acceptable_tol"]            = ipopt_acceptable_tol_;
-    ipopt_opts["acceptable_obj_change_tol"] = ipopt_acceptable_obj_change_tol_;
-    ipopt_opts["print_level"]               = 0;
-    ipopt_opts["warm_start_init_point"]     = std::string("yes");
-    ipopt_opts["warm_start_bound_push"]     = 1e-6;
-    ipopt_opts["warm_start_mult_bound_push"] = 1e-6;
-    ipopt_opts["warm_start_slack_bound_push"] = 1e-6;
-    ipopt_opts["mu_init"]                   = 1e-3;
-    ipopt_opts["mu_strategy"]               = std::string("adaptive");
-    ipopt_opts["nlp_scaling_method"]        = std::string("gradient-based");
-    ipopt_opts["fixed_variable_treatment"]  = std::string("relax_bounds");
-    ipopt_opts["linear_solver"]             = ipopt_linear_solver_;  // ma57, ma86, ma97, or mumps
-    if (!ipopt_hsllib_.empty()) {
-        ipopt_opts["hsllib"]                = ipopt_hsllib_;
-    }
-    if (ipopt_max_cpu_time_ > 0.0) {
-        ipopt_opts["max_cpu_time"]          = ipopt_max_cpu_time_;
-    }
-
-    Dict solver_opts;
-    solver_opts["ipopt"]      = ipopt_opts;
-    solver_opts["verbose"]    = false;
-    solver_opts["print_time"] = false;
-    solver_opts["expand"]     = true;  // CRITICAL for HSL initialization
-
-    opti_.solver("ipopt", solver_opts);
+    configure_solver();
     std::cout << "[MPCC] NLP built: N=" << N_ << " dt=" << dt_
               << " s, nx=" << NX << " nu=" << NU
-              << " max_obs=" << max_obs_ << "\n";
+              << " max_obs=" << max_obs_
+              << " linear_solver=" << ipopt_linear_solver_
+              << " hsl_lib_path=" << (ipopt_hsllib_.empty() ? std::string("<none>") : ipopt_hsllib_)
+              << "\n";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -439,6 +516,7 @@ MPC::Solution MPC::solve(const std::vector<double>& x0)
     // This ensures the geometry stays correct even after failed solves.
     {
         DM track_vals = DM::zeros(N_ + 1, 8);
+        DM vref_vals  = DM::zeros(N_ + 1);
         double s0 = x0[6];
         double vs_est = std::clamp(x0[9], vs_min_, std::min(x0[3] + 0.5, vs_max_));
 
@@ -452,8 +530,10 @@ MPC::Solution MPC::solve(const std::vector<double>& x0)
             track_vals(k, 5) = lut_num(l_lut_y_,  sk);
             track_vals(k, 6) = lut_num(r_lut_x_,  sk);
             track_vals(k, 7) = lut_num(r_lut_y_,  sk);
+            vref_vals(k)     = v_ref_lut_.is_null() ? vx_max_ : lut_num(v_ref_lut_, sk);
         }
         opti_.set_value(p_track_, track_vals);
+        opti_.set_value(p_vref_,  vref_vals);
     }
 
     // ── Build cold start (centerline-following, equilibrium throttle) ────────
@@ -500,10 +580,27 @@ MPC::Solution MPC::solve(const std::vector<double>& x0)
     // ── Solve ─────────────────────────────────────────────────────────────
     auto t0 = std::chrono::high_resolution_clock::now();
     bool ok = true;
-    try { opti_.solve(); }
-    catch (const std::exception& e) {
+    try {
+        opti_.solve();
+    } catch (const std::exception& e) {
         ok = false;
-        std::cerr << "[MPCC] " << e.what() << "\n";
+        const std::string msg = e.what();
+        std::cerr << "[MPCC] " << msg << "\n";
+
+        // If IPOPT rejects a configured option (commonly unsupported linear solver),
+        // switch to MUMPS once and retry immediately.
+        if (msg.find("Invalid_Option") != std::string::npos && ipopt_linear_solver_ != "mumps") {
+            std::cerr << "[MPCC] Falling back IPOPT linear solver from '" << ipopt_linear_solver_
+                      << "' to 'mumps'.\n";
+            ipopt_linear_solver_ = "mumps";
+            configure_solver();
+            try {
+                opti_.solve();
+                ok = true;
+            } catch (const std::exception& e2) {
+                std::cerr << "[MPCC] Retry with mumps failed: " << e2.what() << "\n";
+            }
+        }
     }
     last_solve_time = std::chrono::duration<double>(
         std::chrono::high_resolution_clock::now() - t0).count();

@@ -169,6 +169,7 @@ SaveRunResult save_run_csv_auto(
     const std::vector<double>& solve_time,
     const std::vector<double>& v_ref_series,
     const std::vector<std::vector<double>>& u_pred_hist,
+    const LoggedLimits& limits,
     bool timestamp
 )
 {
@@ -204,7 +205,8 @@ SaveRunResult save_run_csv_auto(
             throw std::runtime_error("Could not open " + states_ctrls_csv.string());
         }
 
-        f << "k,t,x,y,psi,s,v_state,v_cmd,theta,p_cmd,cost,solve_time,v_ref\n";
+                f << "k,t,x,y,psi,s,v_state,v_cmd,theta,p_cmd,cost,solve_time,v_ref,"
+                    << "theta_min,theta_max,vx_min,vx_max,D_min,D_max,vs_min,vs_max\n";
 
         const std::size_t steps = ctrls.size();
         for (std::size_t k = 0; k < steps; ++k) {
@@ -236,7 +238,15 @@ SaveRunResult save_run_csv_auto(
               << p_cmd << ","
               << cost << ","
               << stime << ","
-              << vref << "\n";
+              << vref << ","
+              << limits.theta_min << ","
+              << limits.theta_max << ","
+              << limits.vx_min << ","
+              << limits.vx_max << ","
+              << limits.D_min << ","
+              << limits.D_max << ","
+              << limits.vs_min << ","
+              << limits.vs_max << "\n";
         }
     }
 
@@ -302,7 +312,7 @@ SaveRunResult save_run_csv_auto(
             throw std::runtime_error("Could not open " + u_pred_csv.string());
         }
 
-        f << "step,pred_idx,p_cmd\n";
+        f << "step,pred_idx,v_pred\n";
 
         for (std::size_t step = 0; step < u_pred_hist.size(); ++step) {
             const auto& up = u_pred_hist[step];

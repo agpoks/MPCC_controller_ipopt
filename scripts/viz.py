@@ -554,6 +554,9 @@ def animate_mpc_dashboard(
         else:
             vel_ref_line.set_data(t_draw, v_ref_arr[idx_used])
         vel_act_line.set_data(t_draw, v_hist[idx_used])
+        xpair_vel = [0.0, ax_vel.get_xlim()[1]]
+        vel_min_line.set_data(xpair_vel, [float(lim["vx_min"]), float(lim["vx_min"])])
+        vel_max_line.set_data(xpair_vel, [float(lim["vx_max"]), float(lim["vx_max"])])
 
         # 8) CTE + SHIFTED bounds + band; smooth auto-scale
         cx_s, cy_s = float(c_x(s)), float(c_y(s))
@@ -638,6 +641,7 @@ def animate_mpc_dashboard_diagnosis(
 
     # NEW: predicted velocity over the horizon per step (if None, it will be derived from pred_hist)
     u_pred_hist=None,      # list of arrays (len N or N+1) with predicted speed [m/s] per step
+    limits=None,           # optional dict with constraint limits for visualization
 ):
     """
     Dashboard with track + diagnostics.
@@ -719,6 +723,8 @@ def animate_mpc_dashboard_diagnosis(
     # steering history (→ degrees)
     theta_hist = None
     th_max_deg = None
+    D_hist = None
+    vs_hist = None
     if ctrls is not None:
         C = np.asarray(ctrls)
         if C.ndim < 2 or C.shape[1] < 2:
@@ -732,6 +738,35 @@ def animate_mpc_dashboard_diagnosis(
                                     else np.r_[C[0,1], C[:,1], np.repeat(C[-1,1], T-1-C.shape[0])])
         if hasattr(mpc, "theta_max"):
             th_max_deg = float(np.degrees(mpc.theta_max))
+
+        def _align_ctrl_col(arr, col, target_len):
+            src = np.asarray(arr[:, col]).reshape(-1)
+            if src.size == target_len - 1:
+                return np.r_[src[0], src]
+            if src.size >= target_len:
+                return src[:target_len]
+            if src.size == 0:
+                return np.zeros(target_len, dtype=float)
+            return np.r_[src, np.repeat(src[-1], target_len - src.size)]
+
+        if C.shape[1] >= 1:
+            D_hist = _align_ctrl_col(C, 0, T)
+        if C.shape[1] >= 3:
+            vs_hist = _align_ctrl_col(C, 2, T)
+
+    lim = {} if limits is None else dict(limits)
+
+    def _lim_default(key, value):
+        if key not in lim or lim[key] is None:
+            lim[key] = value
+
+    _lim_default("theta_max", float(getattr(mpc, "theta_max", 0.35)))
+    _lim_default("D_min", -0.1)
+    _lim_default("D_max", 1.0)
+    _lim_default("vs_min", 0.0)
+    _lim_default("vs_max", float(np.nanmax(v_hist)) if v_hist.size else 3.5)
+    _lim_default("vx_min", 0.0)
+    _lim_default("vx_max", float(np.nanmax(v_hist)) if v_hist.size else 3.5)
 
     # accelerations
     psi = states[:,2]
@@ -801,6 +836,9 @@ def animate_mpc_dashboard_diagnosis(
     ax_tr.grid(True, ls="--", alpha=0.35)
     ax_tr.set_xlabel("X [m]"); ax_tr.set_ylabel("Y [m]")
 
+    # Top-right: drivetrain input D
+    ax_D = fig.add_subplot(gs[0, 3])
+
     # Row 2 (index 1)
     ax_acc  = fig.add_subplot(gs[1:, 0])  # spans two rows
     ax_vel  = fig.add_subplot(gs[1, 1])
@@ -824,7 +862,8 @@ def animate_mpc_dashboard_diagnosis(
 
     line_hist, = ax_tr.plot([], [], color="tab:green", lw=2.0, label="MPC trajectory")
     line_horz, = ax_tr.plot([], [], color="magenta", lw=1.8, label="Predicted horizon")
-    horizon_corr_segments = [ax_tr.plot([], [], color=(0.6,0.2,0.8,0.45), lw=1.5)[0] for _ in range(80)]
+    horizon_corr_lc = LineCollection([], colors=(0.6, 0.2, 0.8, 0.45), linewidths=1.5)
+    ax_tr.add_collection(horizon_corr_lc)
     corr_line, = ax_tr.plot([], [], color="0.2", lw=2.0, alpha=0.9, label="Corridor (current, shifted)")
 
     # Car rectangle
@@ -873,6 +912,27 @@ def animate_mpc_dashboard_diagnosis(
         bbox=dict(fc="white", ec="0.6", alpha=0.95, pad=6.0)
     )
 
+    # ---------- drivetrain input D ----------
+    ax_D.set_title("drivetrain input D")
+    ax_D.set_xlabel("t [s]")
+    ax_D.set_ylabel("D")
+    ax_D.grid(True, ls="--", alpha=0.35)
+    D_line, = ax_D.plot([], [], lw=1.8, color="tab:purple", label="D")
+    D_min_line, = ax_D.plot([], [], lw=1.0, ls='--', color="0.5", label="D_min")
+    D_max_line, = ax_D.plot([], [], lw=1.0, ls='--', color="0.5", label="D_max")
+    ax_D.legend(loc="upper right", fontsize=8)
+    ax_D.set_xlim(0.0, t_axis[-1] if T > 1 else 1.0)
+    D_lim_lo = float(lim["D_min"])
+    D_lim_hi = float(lim["D_max"])
+    D_span = max(0.2, D_lim_hi - D_lim_lo)
+    ax_D.set_ylim(D_lim_lo - 0.25 * D_span, D_lim_hi + 0.25 * D_span)
+
+    D_box = ax_D.text(
+        0.98, 0.02, "", transform=ax_D.transAxes,
+        ha="right", va="bottom", fontsize=9,
+        bbox=dict(fc="white", ec="0.6", alpha=0.9, pad=4.0)
+    )
+
     # ---------- acceleration panel (spans two rows) ----------
     theta_circ = np.linspace(0, 2*np.pi, 256)
     ax_acc.plot(np.cos(theta_circ), np.sin(theta_circ), color="0.5", lw=1.0)  # unit circle
@@ -897,10 +957,13 @@ def animate_mpc_dashboard_diagnosis(
     vel_ref_line,  = ax_vel.plot([], [], color="tab:blue",   lw=1.2, label="reference")
     vel_act_line,  = ax_vel.plot([], [], color="tab:orange", lw=1.8, label="simulated")
     vel_pred_line, = ax_vel.plot([], [], color="magenta", linestyle = "dotted",   lw=1.5, alpha=0.85, label="predicted horizon")  # NEW
+    vel_min_line = ax_vel.plot([], [], lw=1.0, ls='--', color="0.5", label="v_min")[0]
+    vel_max_line = ax_vel.plot([], [], lw=1.0, ls='--', color="0.5", label="v_max")[0]
     ax_vel.legend(loc="best")
     ax_vel.set_xlim(0, t_axis[-1] if T > 1 else 1.0)
-    vmax0 = max(1.0, float(np.max(v_hist))*1.05)
-    ax_vel.set_ylim(0, vmax0)
+    vmax0 = max(1.0, float(np.max(v_hist))*1.05, float(lim["vx_max"]) * 1.05)
+    vmin0 = min(0.0, float(lim["vx_min"]) * 1.05)
+    ax_vel.set_ylim(vmin0, vmax0)
 
     # ---------- CTE panel ----------
     draw_idx = np.arange(0, T, max(1, int(draw_every)))
@@ -956,6 +1019,9 @@ def animate_mpc_dashboard_diagnosis(
     ax_steer.grid(True, ls="--", alpha=0.35)
     steer_line, = ax_steer.plot([], [], lw=1.8, color="tab:olive")
     ax_steer.set_xlim(0.0, T_total)
+
+    if np.isfinite(float(lim["theta_max"])):
+        th_max_deg = float(np.degrees(float(lim["theta_max"])))
 
     if th_max_deg is not None:
         steer_min_line, = ax_steer.plot([], [], lw=1.0, ls='--', color="0.5")
@@ -1040,18 +1106,15 @@ def animate_mpc_dashboard_diagnosis(
         ph = pred_hist[i] if (pred_hist is not None and len(pred_hist) > i) else None
         if ph is not None and ph.size:
             line_horz.set_data(ph[:, 0], ph[:, 1])
-            K = min(len(horizon_corr_segments), ph.shape[0] - 1)
-            for k in range(K):
+            segs = []
+            for k in range(ph.shape[0] - 1):
                 s_k = float(ph[k + 1, 3])
                 lxk, lyk, rxk, ryk = _lr_at_s(s_k)
-                horizon_corr_segments[k].set_data([lxk, rxk], [lyk, ryk])
-                horizon_corr_segments[k].set_visible(True)
-            for k in range(K, len(horizon_corr_segments)):
-                horizon_corr_segments[k].set_visible(False)
+                segs.append([(lxk, lyk), (rxk, ryk)])
+            horizon_corr_lc.set_segments(segs)
         else:
             line_horz.set_data([], [])
-            for seg in horizon_corr_segments:
-                seg.set_visible(False)
+            horizon_corr_lc.set_segments([])
 
         # obstacles move
         if obstacles_log and i < len(obstacles_log) and len(obs_patches):
@@ -1088,8 +1151,9 @@ def animate_mpc_dashboard_diagnosis(
             vel_pred_line.set_data(t_pred_plot, v_pred_plot)
 
             # keep limits generous
-            vmax_now = max(ax_vel.get_ylim()[1], float(np.nanmax(v_pred_plot))*1.05, float(np.nanmax(v_hist))*1.05, 1.0)
-            ax_vel.set_ylim(0.0, vmax_now)
+            vmax_now = max(ax_vel.get_ylim()[1], float(np.nanmax(v_pred_plot))*1.05, float(np.nanmax(v_hist))*1.05, float(lim["vx_max"]) * 1.05, 1.0)
+            vmin_now = min(ax_vel.get_ylim()[0], float(lim["vx_min"]) * 1.05, 0.0)
+            ax_vel.set_ylim(vmin_now, vmax_now)
             x_max_now = ax_vel.get_xlim()[1]
             if t_pred_plot[-1] > x_max_now:
                 ax_vel.set_xlim(0.0, t_pred_plot[-1] * 1.02)
@@ -1116,6 +1180,19 @@ def animate_mpc_dashboard_diagnosis(
         )))
         cte_ylim = (1.0 - CTE_SMOOTH) * cte_ylim + CTE_SMOOTH * np.array([-target, target])
         ax_cte.set_ylim(cte_ylim[0], cte_ylim[1])
+
+        # drivetrain input D with hard limits
+        xpair_D = [0.0, T_total]
+        D_min_line.set_data(xpair_D, [float(lim["D_min"]), float(lim["D_min"])])
+        D_max_line.set_data(xpair_D, [float(lim["D_max"]), float(lim["D_max"])])
+        if D_hist is not None:
+            D_used = D_hist[idx_used]
+            D_line.set_data(t_draw, D_used)
+            d_avg = np.nanmean(D_used); d_min = np.nanmin(D_used); d_max = np.nanmax(D_used)
+            D_box.set_text(f"avg: {d_avg:4.2f}\nmin: {d_min:4.2f}\nmax: {d_max:4.2f}")
+        else:
+            D_line.set_data([], [])
+            D_box.set_text("D input unavailable")
 
         # cost panel
         if cost_hist is not None:
@@ -1178,8 +1255,9 @@ def animate_mpc_dashboard_diagnosis(
         info_txt.set_text(_format_laptimes(t_axis[i]))
 
         return (line_hist, car_rect, corr_line, line_horz, sc,
-                vel_ref_line, vel_act_line, vel_pred_line,
+                vel_ref_line, vel_act_line, vel_pred_line, vel_min_line, vel_max_line,
                 cte_line, cte_lo_line, cte_hi_line,
+                D_line, D_min_line, D_max_line,
                 (head_psi_line if head_psi_line is not None else ax_head),
                 (head_phi_line if head_phi_line is not None else ax_head),
                 (head_beta_line if head_beta_line is not None else ax_head),
