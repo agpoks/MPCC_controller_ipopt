@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Vehicle physical parameters – 1/10-scale RC car, Liniger/single-track model
+#
+# All values are in SI units.  These defaults match the Liniger et al. (2017)
+# miniature-race-car identification.  Override them for your specific car by
+# changing the values here; no rebuild is required.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Drivetrain ────────────────────────────────────────────────────────────────
+# Longitudinal force: Frx = Cm1 * D  -  Cm2 * D * vx
+# D ∈ [D_min, D_max] is the actuator command (dimensionless normalised duty)
+Cm1: 0.287
+Cm2: 0.0545
+
+# ── Rolling resistance ────────────────────────────────────────────────────────
+# Ffric = -Cr0  -  Cr2 * vx^2
+Cr0: 0.0518
+Cr2: 0.00035
+
+# ── Front Pacejka tyre ────────────────────────────────────────────────────────
+# Ffy = Df * sin( Cf * atan( Bf * alpha_f ) )
+Bf: 2.579
+Cf: 1.2
+Df: 0.192
+
+# ── Rear Pacejka tyre ─────────────────────────────────────────────────────────
+# Fry = Dr * sin( Cr_tire * atan( Br * alpha_r ) )
+Br: 3.3852
+Cr_tire: 1.2691
+Dr: 0.1737
+
+# ── Inertia ───────────────────────────────────────────────────────────────────
+# m  : total mass [kg]
+# Iz : yaw moment of inertia [kg·m²]
+m:  0.041
+Iz: 0.0000278
+
+# ── Axle distances ────────────────────────────────────────────────────────────
+# Distance from CoG to front / rear axle [m]
+lf: 0.029
+lr: 0.033
+
+# ── Car footprint (used for obstacle clearance) ───────────────────────────────
+car_radius: 0.15

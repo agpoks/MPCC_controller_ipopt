@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Car7 physical parameters — 1/10-scale RC car
+#
+# Source: MATLAB identification
+#   par.l_F=0.1705; par.l_R=0.1515; par.m=4.251; par.I_Z=0.04696;
+#   par.delta_f=0.4; par.a_x_max=12;
+#   pac.F=[0.7227 12.4640 9.1202 0.0449]  % [B C D x0] front
+#   pac.R=[12.3882 0.2526 39.4794 0.0352] % [B C D x0] rear
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Axle distances ────────────────────────────────────────────────────────────
+lf: 0.1705
+lr: 0.1515
+
+# ── Inertia ───────────────────────────────────────────────────────────────────
+m:  4.251
+Iz: 0.04696
+
+# ── Drivetrain ────────────────────────────────────────────────────────────────
+# Frx = Cm1*D - Cm2*D*vx
+# Cm1 = m * a_x_max = 4.251 * 12 = 51.012 N  (peak traction at D=1, vx=0)
+# Cm2: speed-dependent back-EMF / mechanical loss coefficient
+Cm1: 51.0
+Cm2: 3.64
+
+# ── Rolling resistance ────────────────────────────────────────────────────────
+# Ffric = -Cr0 - Cr2 * vx^2
+Cr0: 1.5
+Cr2: 0.10
+
+# ── Front Pacejka tyre (pac.F = [B C D x0]) ──────────────────────────────────
+# Ffy = Df * sin( Cf * atan( Bf * alpha_f ) )
+Bf: 0.7227
+Cf: 12.4640
+Df: 9.1202
+
+# ── Rear Pacejka tyre (pac.R = [B C D x0]) ───────────────────────────────────
+# Fry = Dr * sin( Cr_tire * atan( Br * alpha_r ) )
+Br: 12.3882
+Cr_tire: 0.2526
+Dr: 39.4794
+
+# ── Car footprint (used for obstacle clearance) ───────────────────────────────
+car_radius: 0.20

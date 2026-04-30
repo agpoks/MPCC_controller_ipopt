@@ -1,0 +1,61 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Car7 MPCC tuning parameters
+#
+# Car7 is a 1/10-scale RC racing car (m=4.251 kg, a_x_max=12 m/s²).
+# The controller is tuned to follow the centerline tightly and only deviate
+# for obstacle avoidance.  High mpc_w_cte keeps lateral error minimal.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Horizon ───────────────────────────────────────────────────────────────────
+N:  15
+dT: 0.05
+
+# ── Speed / progress bounds ───────────────────────────────────────────────────
+v_max:     7.0
+v_ref_min: 2.0    # minimum curvature reference speed [m/s]
+p_min:     0.0
+p_max:     7.0
+
+# ── Actuator limits ───────────────────────────────────────────────────────────
+D_min:      -1.0  # full braking enabled (par.a_x_max is symmetric)
+D_max:       1.0
+theta_max:   0.4  # par.delta_f = 0.4 rad (~23 deg)
+dD_max:     20.0  # throttle rate limit [1/s]
+dDelta_max:  8.0  # steering rate limit [rad/s]
+dVs_max:    10.0  # virtual progress rate limit [m/s²]
+
+# ── MPCC cost weights ─────────────────────────────────────────────────────────
+# mpc_w_cte is set high so the car hugs the centerline; obstacle avoidance
+# is handled by the obstacle costs which temporarily override centering.
+mpc_w_cte:      3.0       # tight lateral tracking
+mpc_w_lag:    800.0       # strong lag penalty
+mpc_w_p:        0.05      # progress maximisation
+mpc_w_vref:     5.0       # curvature-based speed tracking
+mpc_w_delta_d:  0.005     # steering-rate smoothness
+mpc_w_delta_p:  1.0e-5    # progress-rate smoothness
+mpc_w_accel:    1.0e-4    # throttle-rate smoothness
+
+# ── Friction / slip constraints ───────────────────────────────────────────────
+# friction_long_peak / friction_lat_peak normalise the ellipse.
+# Set to Cm1 and Dr from car7_vehicle.yaml so full-throttle straightline
+# driving does NOT trigger the friction penalty.
+mpc_w_friction:     50.0
+friction_long_peak: 51.0    # Cm1 [N] — peak longitudinal force at D=1, vx=0
+friction_lat_peak:  39.4794 # Dr  [N] — peak rear lateral force
+
+mpc_w_slip:    30.0
+vy_soft_limit:  0.5   # body-frame lateral velocity soft limit [m/s]
+
+# ── Obstacle avoidance ────────────────────────────────────────────────────────
+max_obstacles:           4
+obs_margin:              0.35   # additional clearance [m] (car7 is larger)
+mpc_w_obs:            5000.0   # soft penalty weight
+mpc_use_hard_obs_slack:   1
+mpc_w_obs_hard_slack: 30000.0
+
+# ── IPOPT settings ────────────────────────────────────────────────────────────
+ipopt_max_iter:                  150
+ipopt_tol:                       1.0e-4
+ipopt_acceptable_tol:            1.0e-3
+ipopt_acceptable_obj_change_tol: 1.0e-3
+ipopt_max_cpu_time:              0.0

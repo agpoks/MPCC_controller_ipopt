@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MPCC tuning parameters
+#
+# Edit this file to re-tune the controller without recompiling.
+# All cost weights and solver settings are read at startup.
+#
+# Quick guide to tuning:
+#   mpc_w_cte     ↑  →  tighter lateral tracking (less contouring error)
+#   mpc_w_lag     ↑  →  penalises falling behind the virtual reference point
+#   mpc_w_p       ↑  →  rewards faster progress (higher virtual speed)
+#   mpc_w_vref    ↑  →  tracks the curvature-based reference speed more closely
+#   mpc_w_delta_d ↑  →  smoother steering transitions
+#   mpc_w_slip    ↑  →  penalises large lateral tyre velocity (vy) → less drift
+#   mpc_w_friction↑  →  penalises combined front/rear tyre loading beyond peak
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Horizon ───────────────────────────────────────────────────────────────────
+# N  : number of prediction steps
+# dT : sample time [s]
+#   Total horizon = N * dT seconds.
+#
+# For real-time operation at 50 Hz:  N = 10, dT = 0.02  (0.20 s horizon)
+# For simulation accuracy:           N = 15, dT = 0.05  (0.75 s horizon)
+N:  15
+dT: 0.05
+
+# ── Speed / progress bounds ───────────────────────────────────────────────────
+v_max: 3.5
+v_min: 0.0
+p_min: 0.0    # vs_min: minimum progress speed
+p_max: 3.5    # vs_max: maximum progress speed
+
+# ── Actuator limits ───────────────────────────────────────────────────────────
+D_min:      -0.1  # minimum drivetrain command (limited reverse)
+D_max:       1.0  # maximum drivetrain command
+theta_max:   0.35 # maximum front steering angle [rad] (~20 deg)
+dD_max:     15.0  # throttle rate limit [1/s]
+dDelta_max: 15.0  # steering rate limit [rad/s]
+dVs_max:    10.0  # virtual progress rate limit [m/s²]
+v_ref_min:   1.5  # minimum curvature reference speed [m/s]
+
+# ── MPCC cost weights ─────────────────────────────────────────────────────────
+mpc_w_cte:      1.0       # contouring error (lateral deviation from racing line)
+mpc_w_lag:    500.0       # lag error (longitudinal deviation)
+mpc_w_p:        0.05      # progress maximisation (reward higher vs)
+mpc_w_vref:     3.0       # deviation from curvature-based reference speed
+mpc_w_delta_d:  0.01      # steering-rate smoothness penalty
+mpc_w_delta_p:  1.0e-5    # progress-rate smoothness penalty
+mpc_w_accel:    1.0e-4    # throttle-rate smoothness penalty
+
+# ── Friction / slip constraints (soft penalties) ──────────────────────────────
+# mpc_w_slip     : penalises |vy| exceeding vy_soft_limit (lateral slip control)
+# vy_soft_limit  : soft upper bound on body-frame lateral velocity [m/s]
+# mpc_w_friction : penalises combined tyre loading beyond the friction ellipse
+mpc_w_slip:       50.0
+vy_soft_limit:     0.25
+mpc_w_friction:   30.0
+
+# ── Obstacle avoidance ────────────────────────────────────────────────────────
+max_obstacles:            4
+obs_margin:               0.27   # additional clearance beyond car+obstacle radii [m]
+mpc_w_obs:             3000.0   # soft quadratic obstacle penalty weight
+mpc_use_hard_obs_slack:    1    # 1 = add hard-slack constraints on top of soft penalty
+mpc_w_obs_hard_slack:  20000.0  # weight on hard-slack variables
+
+# ── IPOPT settings ────────────────────────────────────────────────────────────
+# For simulation (no wall-clock limit), set ipopt_max_cpu_time = 0.
+# For 50 Hz real-time, set ipopt_max_cpu_time = 0.018 (18 ms).
+ipopt_max_iter:                  120
+ipopt_tol:                       1.0e-4
+ipopt_acceptable_tol:            1.0e-3
+ipopt_acceptable_obj_change_tol: 1.0e-3
+ipopt_max_cpu_time:              0.0     # 0 = no limit (simulation mode)

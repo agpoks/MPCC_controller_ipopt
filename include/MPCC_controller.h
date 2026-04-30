@@ -4,44 +4,54 @@
 #include <map>
 #include <string>
 
-/*
- * MPCC controller — single-track vehicle model with Pacejka tires.
- * Based on Liniger et al. (2017) as implemented in demo/C++/.
- *
- * State  x = [X, Y, phi, vx, vy, r, s, D, delta, vs]       (NX = 10)
- *   X, Y    : global position
- *   phi     : heading angle
- *   vx, vy  : body-frame longitudinal / lateral velocity
- *   r       : yaw rate
- *   s       : arc-length progress along reference track
- *   D       : drivetrain force command  (Frx = Cm1*D - Cm2*D*vx)
- *   delta   : front steering angle
- *   vs      : progress speed  (ds/dt)
- *
- * Input  u = [dD, dDelta, dVs]                              (NU = 3)
- *   Rates of change of the actuator states D, delta, vs.
- *
- * Tyre forces: Pacejka simplified (Liniger model):
- *   Ffy = Df * sin(Cf * atan(Bf * alpha_f))
- *   Fry = Dr * sin(Cr * atan(Br * alpha_r))
- *   Frx = Cm1*D - Cm2*D*vx
- *   Ffric = -Cr0 - Cr2*vx^2
- *
- * Integration: RK4, fixed dt.
- * Solver: CasADi Opti + IPOPT — fully nonlinear, no linearisation.
- * Obstacle avoidance: hard circular constraints (parametric per solve).
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// MPCC (Model Predictive Contouring Control) — single-track vehicle
+//
+// Reference: Liniger et al., "Optimization-Based Autonomous Racing of 1:43
+// Scale Vehicles", Optimal Control Applications and Methods, 2017.
+//
+// Vehicle model: Euler-discretised single-track with Pacejka simplified tyre
+// forces (no combined-slip), full CasADi / IPOPT NLP.  HSL MA57 linear solver.
+//
+// ── State  x ∈ ℝ^10 ──────────────────────────────────────────────────────
+//   idx  sym   meaning
+//    0    X    global x-position [m]
+//    1    Y    global y-position [m]
+//    2    φ    heading angle [rad]
+//    3    vx   body-frame longitudinal velocity [m/s]
+//    4    vy   body-frame lateral velocity [m/s]
+//    5    r    yaw rate [rad/s]
+//    6    s    arc-length progress along reference track [m]
+//    7    D    normalised drivetrain command  (Frx = Cm1·D − Cm2·D·vx)
+//    8    δ    front steering angle [rad]
+//    9    vs   virtual progress speed  ds/dt [m/s]
+//
+// ── Input  u ∈ ℝ^3 ───────────────────────────────────────────────────────
+//   idx  sym    meaning
+//    0   dD     rate of change of D  [1/s]
+//    1   dδ     rate of change of δ  [rad/s]
+//    2   dvs    rate of change of vs [m/s²]
+//
+// ── Tyre forces (Pacejka simplified) ─────────────────────────────────────
+//   α_f = δ − atan2(vy + lf·r, vx)       front slip angle
+//   α_r =    − atan2(vy − lr·r, vx)       rear  slip angle
+//   Ffy = Df·sin(Cf·atan(Bf·α_f))         front lateral force
+//   Fry = Dr·sin(Cr·atan(Br·α_r))         rear  lateral force
+//   Frx = Cm1·D − Cm2·D·vx               longitudinal traction
+//   Ffric = −Cr0 − Cr2·vx²               rolling resistance
+// ─────────────────────────────────────────────────────────────────────────────
 
 static constexpr int NX = 10;
 static constexpr int NU = 3;
 
+// Physical parameters of the vehicle (configurable from params/vehicle.yaml).
 struct VehicleParams {
-    double Cm1 = 0.287,  Cm2 = 0.0545;           // drivetrain
-    double Cr0 = 0.0518, Cr2 = 0.00035;           // friction
-    double Bf  = 2.579,  Cf = 1.2,   Df = 0.192; // front Pacejka
-    double Br  = 3.3852, Cr = 1.2691, Dr = 0.1737;// rear Pacejka
-    double m   = 0.041,  Iz = 27.8e-6;            // inertia
-    double lf  = 0.029,  lr = 0.033;              // axle distances
+    double Cm1 = 0.287,  Cm2 = 0.0545;            // drivetrain
+    double Cr0 = 0.0518, Cr2 = 0.00035;            // rolling resistance
+    double Bf  = 2.579,  Cf = 1.2,   Df = 0.192;  // front Pacejka
+    double Br  = 3.3852, Cr = 1.2691, Dr = 0.1737; // rear  Pacejka
+    double m   = 0.041,  Iz = 27.8e-6;             // inertia
+    double lf  = 0.029,  lr = 0.033;               // axle distances
 };
 
 class MPC {
@@ -49,15 +59,18 @@ public:
     struct Obstacle { double x, y, radius; };
 
     struct Solution {
-        casadi::DM X_opt;                // (N+1) x NX
-        casadi::DM U_opt;                // N x NU  [dD, dDelta, dVs]
-        std::vector<double> u_cmd_first; // first optimal [dD, dDelta, dVs]
+        casadi::DM X_opt;                // (N+1) × NX trajectory (rows = time steps)
+        casadi::DM U_opt;                // N × NU  input sequence
+        std::vector<double> u_cmd_first; // first optimal input [dD, dδ, dvs]
     };
 
-    double theta_max       = 0.35; // delta_max exposed for plotter
+    // Exposed so the plotter can read them after each solve.
+    double theta_max       = 0.35; // δ_max [rad]
     double last_cost       = 0.0;
-    double last_solve_time = 0.0;
+    double last_solve_time = 0.0;  // wall-clock time of last IPOPT call [s]
 
+    // Called once before setup_MPC() to set all tuning/solver parameters.
+    // Numeric values read from params/mpcc_tuning.yaml (plus vp_ from vehicle.yaml).
     void set_initial_params(const std::map<std::string, double>& num,
                             const std::map<std::string, std::string>& str);
 
@@ -73,87 +86,100 @@ public:
                         double s_total,
                         const casadi::Function& v_ref_lut);
 
+    // Build the NLP symbolic structure (called once, expensive).
     void setup_MPC();
+
+    // Update obstacle list before each solve call.
     void set_obstacles(const std::vector<Obstacle>& obs);
 
-    // x0 must have exactly NX=10 elements: [X,Y,phi,vx,vy,r,s,D,delta,vs]
+    // Solve one MPC step.  x0 must have exactly NX elements.
     Solution solve(const std::vector<double>& x0);
 
-    // One-step numerical simulation using the same RK4 dynamics.
+    // One-step simulation using RK4 (same dynamics as the NLP, higher accuracy).
     std::vector<double> propagate(const std::vector<double>& x,
                                   const std::vector<double>& u) const;
 
 private:
+    // ── Horizon / discretisation ──────────────────────────────────────────
     int    N_   = 15;
     double dt_  = 0.05;
-    int    max_obs_    = 4;
-    double obs_margin_ = 0.25;
-    double car_radius_ = 0.15;
 
+    // ── Physical / track bounds ───────────────────────────────────────────
     double vx_min_ = 0.05, vx_max_ = 3.5;
-    double vy_min_ = -3.0, vy_max_ = 3.0;
-    double r_min_  = -8.0, r_max_  = 8.0;
     double D_min_  = -0.1, D_max_  = 1.0;
     double delta_min_ = -0.35, delta_max_ = 0.35;
     double vs_min_ = 0.0,  vs_max_ = 3.5;
-    double X_min_  = -200.0, X_max_ = 200.0;
-    double Y_min_  = -200.0, Y_max_ = 200.0;
     double s_ext_max_ = 300.0;
+    double car_radius_ = 0.15;
 
+    // ── Actuator rate limits ──────────────────────────────────────────────
     double dD_max_     = 15.0;
     double dDelta_max_ = 15.0;
     double dVs_max_    = 10.0;
 
-    double qC_      = 0.1;
-    double qL_      = 500.0;
-    double qVs_     = 0.02;
-    double qVref_   = 0.0;
-    double rdD_     = 1e-4;
-    double rdDelta_ = 5e-3;
-    double rdVs_    = 1e-5;
-    double qObs_    = 2000.0;
+    // ── Obstacle avoidance ────────────────────────────────────────────────
+    int    max_obs_    = 4;
+    double obs_margin_ = 0.27;
+
+    // ── MPCC cost weights ─────────────────────────────────────────────────
+    double qC_      = 1.0;     // contouring error weight
+    double qL_      = 500.0;   // lag error weight
+    double qVs_     = 0.05;    // progress reward
+    double qVref_   = 3.0;     // speed reference tracking
+    double rdD_     = 1e-4;    // throttle-rate penalty
+    double rdDelta_ = 0.01;    // steering-rate penalty
+    double rdVs_    = 1e-5;    // progress-rate penalty
+    double qObs_    = 3000.0;  // soft obstacle penalty
     double qObsHardSlack_ = 20000.0;
     bool   use_hard_obs_slack_ = true;
-    double qCN_mult_ = 10.0;
+    double qCN_mult_ = 10.0;   // terminal cost multiplier
 
-    int    ipopt_max_iter_       = 100;
+    // ── Friction / slip soft constraints ─────────────────────────────────
+    double qSlip_              = 50.0;  // penalty per (m/s)² of |vy| above vy_soft_
+    double vy_soft_            = 0.25;  // soft lateral-velocity limit [m/s]
+    double qFriction_          = 30.0;  // friction-ellipse excess penalty weight
+    double friction_long_peak_ = 0.0;   // longitudinal peak force [N]; 0 = auto (vp_.Cm1)
+    double friction_lat_peak_  = 0.0;   // lateral peak force [N];      0 = auto (vp_.Dr)
+
+    // ── IPOPT settings ────────────────────────────────────────────────────
+    int    ipopt_max_iter_       = 120;
     double ipopt_tol_            = 1e-4;
     double ipopt_acceptable_tol_ = 1e-3;
     double ipopt_acceptable_obj_change_tol_ = 1e-3;
-    double ipopt_max_cpu_time_   = 0.0;
-    std::string ipopt_linear_solver_ = "ma57";  // HSL MA57 (faster than MUMPS)
+    double ipopt_max_cpu_time_   = 0.0;  // 0 = unlimited (simulation mode)
+    std::string ipopt_linear_solver_ = "ma57";
     std::string ipopt_hsllib_        = "";
 
+    // ── Vehicle model ─────────────────────────────────────────────────────
     VehicleParams vp_;
-    casadi::Function f_cont_;  // continuous dynamics x_dot=f(x,u) — Euler in NLP
-    casadi::Function f_disc_;  // RK4 discrete dynamics — used only in propagate()
+    casadi::Function f_cont_; // continuous dynamics x_dot = f(x,u), used in NLP (Euler)
+    casadi::Function f_disc_; // RK4 discrete dynamics, used in propagate()
 
+    // ── Track geometry LUTs ───────────────────────────────────────────────
     casadi::Function c_lut_x_, c_lut_y_, c_lut_dx_, c_lut_dy_;
     casadi::Function r_lut_x_, r_lut_y_, l_lut_x_,  l_lut_y_;
     casadi::Function v_ref_lut_;
     double s_total_ = 0.0;
 
+    // ── CasADi Opti NLP ───────────────────────────────────────────────────
     casadi::Opti opti_;
-    casadi::MX   X_, U_;
-    casadi::MX   p_x0_, p_obs_, p_u_prev_;
-    // Track geometry parameters: (N+1) rows × 8 cols [cx,cy,tx,ty,lx,ly,rx,ry]
-    // Evaluated numerically before each solve at warm-start arc-lengths.
-    // Avoids 8*(N+1) symbolic B-spline nodes in the NLP graph.
-    casadi::MX   p_track_;
-    casadi::MX   p_vref_;
-    casadi::MX   cost_expr_;
+    casadi::MX   X_, U_;          // decision variables
+    casadi::MX   p_x0_;           // initial state parameter (NX × 1)
+    casadi::MX   p_obs_;          // obstacle matrix parameter (max_obs × 3)
+    casadi::MX   p_u_prev_;       // previous input for rate cost (NU × 1)
+    casadi::MX   p_track_;        // numeric track geometry ((N+1) × 8)
+    casadi::MX   p_vref_;         // reference speed at each horizon step (N+1)
+    casadi::MX   cost_expr_;      // total cost expression (for diagnostics)
 
-    casadi::DM X_warm_, U_warm_;
-    casadi::DM u_prev_;
+    // ── Warm start ────────────────────────────────────────────────────────
+    casadi::DM X_warm_, U_warm_;  // shifted solution from previous step
+    casadi::DM u_prev_;           // previous applied input (for rate penalty)
     bool       has_warm_start_ = false;
 
     std::vector<Obstacle> obstacles_;
 
     void build_dynamics();
     void check_and_fix_boundary_orientation();
-    void add_corridor_constraint(const casadi::MX& X, const casadi::MX& Y,
-                                 const casadi::MX& s_c);
-    void add_obstacle_constraints(const casadi::MX& X, const casadi::MX& Y);
     casadi::MX obstacle_penalty(const casadi::MX& X, const casadi::MX& Y) const;
     void configure_solver();
 };

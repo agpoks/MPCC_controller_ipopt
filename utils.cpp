@@ -267,15 +267,17 @@ SaveRunResult save_run_csv_auto(
 
             const int rows = static_cast<int>(pred.size1());
             const int cols = static_cast<int>(pred.size2());
-            if (cols < 4) continue;
+            // Need at least 7 columns: state vector [X,Y,phi,vx,vy,r,s,...]
+            // Column 6 is the arc-length s; column 3 is vx (not s).
+            if (cols < 7) continue;
 
             for (int i = 0; i < rows; ++i) {
                 f << step << ","
                   << i << ","
-                  << static_cast<double>(pred(i, 0)) << ","
-                  << static_cast<double>(pred(i, 1)) << ","
-                  << static_cast<double>(pred(i, 2)) << ","
-                  << static_cast<double>(pred(i, 3)) << "\n";
+                  << static_cast<double>(pred(i, 0)) << ","   // X
+                  << static_cast<double>(pred(i, 1)) << ","   // Y
+                  << static_cast<double>(pred(i, 2)) << ","   // phi (heading)
+                  << static_cast<double>(pred(i, 6)) << "\n"; // s  (arc-length)
             }
         }
     }
