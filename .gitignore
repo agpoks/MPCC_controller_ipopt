@@ -4,6 +4,7 @@
 .claude/
 # Build
 build/
+build_hsl/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
